@@ -4426,6 +4426,9 @@ test "compiled named effect plans preserve drop occupancy slot order routes and 
     var stream_plan: [5]u8 = undefined;
     try std.testing.expectEqual(stream_plan.len, core.nativeStreamPolicy(&.{ 2, 1, 0, 0, 0, 127 }, &stream_plan));
     const frozen_stream = stream_plan;
+    var window_plan: [2]u8 = undefined;
+    try std.testing.expectEqual(window_plan.len, core.nativeWindowPolicy(&.{ 0, 0, 0 }, &window_plan));
+    try std.testing.expectEqualSlices(u8, &.{ 0, 255 }, &window_plan);
     try std.testing.expectEqual(plan.len, core.nativeEffectPolicy(request[0..85], &plan));
     try std.testing.expectEqualSlices(u8, &frozen_plan, &plan);
     try std.testing.expectEqualSlices(u8, &frozen_stream, &stream_plan);
@@ -4585,4 +4588,71 @@ test "compiled stream plans preserve admission routes loss and dispatch arena ow
         comparisons += 1;
     }
     try std.testing.expectEqual(@as(usize, 1520), comparisons);
+}
+
+fn writeWindowPolicyTestLabel(writer: *std.Io.Writer, label: []const u8) !void {
+    try writer.writeInt(u32, @intCast(label.len), .little);
+    try writer.writeAll(label);
+}
+
+test "compiled window decisions preserve labels admission order retirement and ABI ownership" {
+    defer core.rt.frameReset();
+    _ = core.initialModel();
+    const borrowed_command = core.bootCommand();
+    const command_copy = try std.testing.allocator.dupe(u8, borrowed_command);
+    defer std.testing.allocator.free(command_copy);
+    const names = [_][]const u8{ "", "new", "other", "caf\xc3\xa9", "\x00\xff", &([_]u8{255} ** 64), &([_]u8{255} ** 65) };
+    const canvases = [_][]const u8{ "", "main", "fresh", "occupied", "\x00\xff", &([_]u8{255} ** 64), &([_]u8{255} ** 65) };
+    var comparisons: usize = 0;
+    for (0..5) |count| {
+        for (names) |name| for (canvases) |candidate_canvas| {
+            var buffer: [1024]u8 = undefined;
+            var writer = std.Io.Writer.fixed(&buffer);
+            try writer.writeByte(1);
+            try writeWindowPolicyTestLabel(&writer, "main");
+            try writeWindowPolicyTestLabel(&writer, name);
+            try writeWindowPolicyTestLabel(&writer, candidate_canvas);
+            try writer.writeByte(@intCast(count));
+            var matching: ?u8 = null;
+            for (0..count) |index| {
+                const stored = names[1 + index % 4];
+                try writeWindowPolicyTestLabel(&writer, stored);
+                try writeWindowPolicyTestLabel(&writer, "occupied");
+                if (matching == null and std.mem.eql(u8, name, stored)) matching = @intCast(index);
+            }
+            const action: u8 = if (matching != null) 1 else if (count == 4) 2 else if (name.len == 0 or name.len > 64 or candidate_canvas.len == 0 or candidate_canvas.len > 64) 3 else if (std.mem.eql(u8, candidate_canvas, "main") or (count > 0 and std.mem.eql(u8, candidate_canvas, "occupied"))) 4 else 0;
+            var result: [2]u8 = undefined;
+            try std.testing.expectEqual(result.len, core.nativeWindowPolicy(writer.buffered(), &result));
+            try std.testing.expectEqualSlices(u8, &.{ action, matching orelse 255 }, &result);
+            try std.testing.expectEqualSlices(u8, command_copy, borrowed_command);
+            const frozen = result;
+            const retirement: [3]u8 = .{ 0, 0, 0 };
+            var other: [2]u8 = undefined;
+            try std.testing.expectEqual(other.len, core.nativeWindowPolicy(&retirement, &other));
+            try std.testing.expectEqualSlices(u8, &frozen, &result);
+            comparisons += 1;
+        };
+    }
+    core.rt.frameReset();
+    try std.testing.expectEqual(@as(usize, 245), comparisons);
+    for (0..16) |mask| {
+        var buffer: [1024]u8 = undefined;
+        var writer = std.Io.Writer.fixed(&buffer);
+        try writer.writeByte(0);
+        try writer.writeByte(@intCast(@popCount(mask)));
+        for (0..4) |index| if (mask & (@as(usize, 1) << @intCast(index)) != 0) {
+            try writeWindowPolicyTestLabel(&writer, names[index + 1]);
+        };
+        try writer.writeByte(4);
+        var stale: u8 = 255;
+        for (0..4) |index| {
+            try writeWindowPolicyTestLabel(&writer, names[index + 1]);
+            try writeWindowPolicyTestLabel(&writer, "occupied");
+            if (stale == 255 and mask & (@as(usize, 1) << @intCast(index)) == 0) stale = @intCast(index);
+        }
+        var result: [2]u8 = undefined;
+        try std.testing.expectEqual(result.len, core.nativeWindowPolicy(writer.buffered(), &result));
+        core.rt.frameReset();
+        try std.testing.expectEqualSlices(u8, &.{ 0, stale }, &result);
+    }
 }
