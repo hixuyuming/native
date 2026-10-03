@@ -350,6 +350,10 @@ const Emitter = struct {
             try reserved.appendSlice(self.arena, &.{ "nativeWindowPolicy", "request", "output", "ptr", "len" });
         }
 
+        if (sidecar_mod.abiHasExport(self.sidecar.abi, "native_theme_policy")) {
+            try reserved.appendSlice(self.arena, &.{ "nativeThemePolicy", "request", "output", "ptr", "len" });
+        }
+
         if (self.sidecar.model_helpers.len > 0) try reserved.append(self.arena, "callHelper");
         const chan = self.sidecar.channels;
         if (chan.command_msg or chan.frame_msg or chan.key_msg or chan.pinch_msg or chan.drop_msg or sidecar_mod.abiHasExport(self.sidecar.abi, "native_view")) {
@@ -1504,6 +1508,22 @@ const Emitter = struct {
                 \\    var len: usize = 0;
                 \\    abi.native_window_policy(request.ptr, request.len, &ptr, &len);
                 \\    if (len > output.len) @panic("invalid compiled window policy result");
+                \\    @memcpy(output[0..len], ptr[0..len]);
+                \\    return len;
+                \\}
+                \\
+            );
+        }
+
+        if (sidecar_mod.abiHasExport(self.sidecar.abi, "native_theme_policy")) {
+            try self.raw(
+                \\
+                \\/// Cycle policy: copy results; finishCycle owns the frame reset.
+                \\pub fn nativeThemePolicy(request: []const u8, output: []u8) usize {
+                \\    var ptr: [*]const u8 = undefined;
+                \\    var len: usize = 0;
+                \\    abi.native_theme_policy(request.ptr, request.len, &ptr, &len);
+                \\    if (len > output.len) @panic("invalid compiled theme policy result");
                 \\    @memcpy(output[0..len], ptr[0..len]);
                 \\    return len;
                 \\}

@@ -148,6 +148,10 @@ pub fn Bindings(comptime prefix: []const u8) type {
         /// view/cycle consumers retain ownership of the compiler frame.
         pub const native_window_policy = Symbol(fn (request: [*]const u8, request_len: usize, out: *[*]const u8, len: *usize) callconv(.c) void, "native_window_policy");
 
+        /// Stock-theme decisions. Borrowed requests and copied results retain
+        /// dispatch lifetime; finishCycle owns the frame reset.
+        pub const native_theme_policy = Symbol(fn (request: [*]const u8, request_len: usize, out: *[*]const u8, len: *usize) callconv(.c) void, "native_theme_policy");
+
         // ---------------------------------------------------- dispatch
         pub const dispatch_void = Symbol(fn (tag: u8, cmd: *[*]const u8, cmd_len: *usize) callconv(.c) void, "dispatch_void");
         pub const dispatch_bytes = Symbol(fn (tag: u8, ptr: [*]const u8, len: usize, cmd: *[*]const u8, cmd_len: *usize) callconv(.c) void, "dispatch_bytes");

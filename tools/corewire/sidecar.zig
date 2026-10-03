@@ -276,6 +276,7 @@ pub const conditional_exports = [_][]const u8{
     "native_effect_policy",
     "native_stream_policy",
     "native_window_policy",
+    "native_theme_policy",
 };
 
 // ------------------------------------------------------------ reading
@@ -2481,6 +2482,11 @@ test "V11: the optional native view extension is unique and follows channels" {
     try testing.expect(abiHasExport(window_policy_valid.abi, "native_window_policy"));
     const window_policy_duplicate = try replaced(arena, window, "\"native_window_policy\"]", "\"native_window_policy\", \"native_window_policy\"]");
     try expectRefusal(window_policy_duplicate, "abi.exports[39]", "out of canonical order");
+    const theme = try replaced(arena, db, "\"native_db_policy\"]", "\"native_db_policy\", \"native_theme_policy\"]");
+    const theme_valid = try readValid(arena, theme);
+    try testing.expect(abiHasExport(theme_valid.abi, "native_theme_policy"));
+    const theme_duplicate = try replaced(arena, theme, "\"native_theme_policy\"]", "\"native_theme_policy\", \"native_theme_policy\"]");
+    try expectRefusal(theme_duplicate, "abi.exports[39]", "out of canonical order");
     const db_duplicate = try replaced(arena, db, "\"native_db_policy\"]", "\"native_db_policy\", \"native_db_policy\"]");
     try expectRefusal(db_duplicate, "abi.exports[38]", "out of canonical order");
     const timer_duplicate = try replaced(arena, timer, "\"native_timer_policy\"]", "\"native_timer_policy\", \"native_timer_policy\"]");
