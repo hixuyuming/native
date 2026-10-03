@@ -1,3 +1,4 @@
+import { native_status_policy } from "../src/runtime_policy.ts";
 import { native_theme_policy } from "../src/runtime_policy.ts";
 import assert from "node:assert/strict";
 import test from "node:test";
@@ -345,4 +346,67 @@ test("theme policy preserves complete-token precedence and rebuild coordination"
   for (const bytes of [[], [3], [1], [2], [1, 3, 1, 0, 0, 0, 0, 0], [1, 0, 0, 0, 0, 0, 0, 0], [1, 0, 1, 0, 2, 0, 0, 0], [2, 2, 0, 0, 0], [2, 0, 0, 0, 3]]) {
     assert.throws(() => native_theme_policy(new Uint8Array(bytes)), /theme policy|theme .*request|theme .*flag/);
   }
+});
+
+interface StatusSlot { active: boolean; id: number }
+const statusSlots = (): StatusSlot[] => Array.from({ length: 8 }, () => ({ active: false, id: 0 }));
+function statusRequest(slots: StatusSlot[], ids: number[], index = 255, applied = slots.filter(s => s.active).length): Uint8Array {
+  const bytes = new Uint8Array(44 + ids.length * 4), data = new DataView(bytes.buffer);
+  bytes.set([index === 255 ? 0 : 1, index, ids.length, applied]);
+  ids.forEach((id, i) => data.setUint32(4 + i * 4, id, true));
+  slots.forEach((slot, i) => { const at = 4 + ids.length * 4 + i * 5; bytes[at] = +slot.active; data.setUint32(at + 1, slot.id, true); });
+  return bytes;
+}
+test("status admission preserves invalid/duplicate refusal, retained lookup and every hole", () => {
+  const ids = [0, 7, 4294967295, 7, 2147483648, 100, 200, 300];
+  const slots = statusSlots();
+  for (let occupied = 0; occupied <= 8; occupied++) {
+    slots.forEach((s, i) => { s.active = i < occupied; s.id = ids[(i + 1) % ids.length]!; });
+    ids.forEach((id, index) => {
+      const matching = slots.findIndex(s => s.active && s.id === id), free = slots.findIndex(s => !s.active);
+      const invalid = id === 0 || ids.slice(0, index).includes(id);
+      const want = invalid ? [0, 255] : matching >= 0 ? [3, matching] : free >= 0 ? [2, free] : [1, 255];
+      assert.deepEqual([...native_status_policy(statusRequest(slots, ids, index))], want);
+    });
+  }
+  for (let hole = 0; hole < 8; hole++) {
+    slots.forEach((s, i) => { s.active = i !== hole; s.id = 10 + i; });
+    assert.deepEqual([...native_status_policy(statusRequest(slots, [99], 0))], [2, hole]);
+    assert.deepEqual([...native_status_policy(statusRequest(slots, [99], 0, 8))], [1, 255]);
+    const matching = hole === 0 ? 1 : 0;
+    assert.deepEqual([...native_status_policy(statusRequest(slots, [slots[matching]!.id], 0, 8))], [3, matching]);
+  }
+});
+test("status retirement sees all declarations, including duplicates and raw zero ids", () => {
+  const slots = statusSlots();slots.forEach((s, i) => { s.active = true; s.id = i; });
+  for (let mask = 0; mask < 256; mask++) {
+    const ids = slots.filter((_, i) => mask & (1 << i)).map(s => s.id);
+    assert.deepEqual([...native_status_policy(statusRequest(slots, ids))], [255 & ~mask, 255]);
+  }
+  // An invalid duplicate still retains a live identity during the earlier
+  // retirement phase; later admission ignores its repeated declaration.
+  assert.deepEqual([...native_status_policy(statusRequest(slots, [0, 2, 2]))], [250, 255]);
+});
+test("status patch plans compare every opaque hash byte independently", () => {
+  const bytes = new Uint8Array(49);bytes[0] = 2;
+  for (let i = 0; i < 24; i++) bytes[1 + i] = bytes[25 + i] = 255 - i;
+  assert.deepEqual([...native_status_policy(bytes)], [0, 255]);
+  for (let mask = 0; mask < 8; mask++) for (let byte = 0; byte < 8; byte++) {
+    const request = bytes.slice();
+    for (let field = 0; field < 3; field++) if (mask & (1 << field)) request[1 + field * 8 + byte]! ^= 1;
+    assert.deepEqual([...native_status_policy(request)], [mask, 255]);
+  }
+});
+test("status requests refuse malformed tables and preserve offset views", () => {
+  const slots = statusSlots();const requests = [statusRequest(slots, [1], 0), statusRequest(slots, []), new Uint8Array(49)];requests[2]![0] = 2;
+  for (const request of requests) {
+    for (let n = 0; n < request.length; n++) assert.throws(() => native_status_policy(request.subarray(0, n)));
+    assert.throws(() => native_status_policy(new Uint8Array([...request, 0])));
+    const padded = new Uint8Array(request.length + 8);padded.set(request, 4);
+    assert.deepEqual(native_status_policy(padded.subarray(4, 4 + request.length)), native_status_policy(request));
+  }
+  const corrupt = statusRequest(slots, [1], 0);corrupt[1] = 1;assert.throws(() => native_status_policy(corrupt));
+  corrupt[1] = 0;corrupt[3] = 9;assert.throws(() => native_status_policy(corrupt));
+  corrupt[3] = 0;corrupt[8] = 2;assert.throws(() => native_status_policy(corrupt));
+  corrupt[8] = 0;corrupt[0] = 3;assert.throws(() => native_status_policy(corrupt));
 });

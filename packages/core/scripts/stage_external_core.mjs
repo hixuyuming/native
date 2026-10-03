@@ -191,6 +191,7 @@ if (args["view-markup"]) {
   profile.exports.push({ export: "native_stream_policy", symbol: `${profile.abi.prefix}native_stream_policy`, params: ["bytes"], returns: "bytes" });
   profile.exports.push({ export: "native_window_policy", symbol: `${profile.abi.prefix}native_window_policy`, params: ["bytes"], returns: "bytes" });
   profile.exports.push({ export: "native_theme_policy", symbol: `${profile.abi.prefix}native_theme_policy`, params: ["bytes"], returns: "bytes" });
+  profile.exports.push({ export: "native_status_policy", symbol: `${profile.abi.prefix}native_status_policy`, params: ["bytes"], returns: "bytes" });
   fs.writeFileSync(path.join(args.out, "profile.json"), JSON.stringify(profile, null, 2) + "\n");
 }
 if (args["services-client"]) {

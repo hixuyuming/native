@@ -170,6 +170,7 @@ const signatures: Signature[] = [
   { suffix: "native_stream_policy", name: "native_stream_policy", params: ["bytes"] },
   { suffix: "native_window_policy", name: "native_window_policy", params: ["bytes"] },
   { suffix: "native_theme_policy", name: "native_theme_policy", params: ["bytes"] },
+  { suffix: "native_status_policy", name: "native_status_policy", params: ["bytes"] },
 ];
 
 const randomness_teaching = "randomness is an effect: the core requests it through a command and the value arrives as a Msg, so a recorded session replays it exactly.";
