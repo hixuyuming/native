@@ -174,6 +174,8 @@ if (args["view-markup"]) {
   const profile = JSON.parse(fs.readFileSync(args.profile, "utf8"));
   profile.exports.push({ export: "native_view", symbol: `${profile.abi.prefix}native_view`, params: [], returns: "bytes" });
   if (windows.length) profile.exports.push({ export: "native_window_view", symbol: `${profile.abi.prefix}native_window_view`, params: ["bytes"], returns: "bytes" });
+  profile.exports.push({ export: "native_media_view", symbol: `${profile.abi.prefix}native_media_view`, params: ["bytes"], returns: "bytes" });
+  if (windows.length) profile.exports.push({ export: "native_media_window_view", symbol: `${profile.abi.prefix}native_media_window_view`, params: ["bytes", "bytes"], returns: "bytes" });
   profile.exports.push({ export: "native_radio_policy", symbol: `${profile.abi.prefix}native_radio_policy`, params: ["bytes"], returns: "bytes" });
   profile.exports.push({ export: "native_tabs_policy", symbol: `${profile.abi.prefix}native_tabs_policy`, params: ["bytes"], returns: "bytes" });
   profile.exports.push({ export: "native_tree_policy", symbol: `${profile.abi.prefix}native_tree_policy`, params: ["bytes"], returns: "bytes" });
