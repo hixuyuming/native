@@ -1,8 +1,8 @@
 //! Deterministic session journal: the on-disk format for record/replay.
 //!
-//! A Native SDK session IS three things — the app's deterministic init,
-//! the platform-event sequence, and the effect results that crossed the
-//! effect boundary. This module makes that literal: a journal file holds
+//! A Native SDK session consists of deterministic app init, platform
+//! events, effect results, and synchronous OS chrome query results.
+//! A journal file holds
 //! a session header, every dispatched platform event (payload + implicit
 //! ordinal), every effect RESULT the drain delivered to `update` (fetch
 //! response bytes, subprocess lines and exits, file reads, clipboard
@@ -169,6 +169,7 @@ fn formatLayoutDescription(comptime epoch: u32) []const u8 {
             "checkpoint=" ++ layout_fingerprint.describe(Checkpoint) ++ "\n" ++
             "screenshot=" ++ layout_fingerprint.describe(ScreenshotMark) ++ "\n" ++
             "end=" ++ layout_fingerprint.describe(End) ++ "\n" ++
+            "window_chrome=" ++ layout_fingerprint.describe(WindowChromeRecord) ++ "\n" ++
             "effect=" ++ layout_fingerprint.describe(EffectResultRecord) ++ "\n" ++
             "event_tags=" ++ layout_fingerprint.describe(EventTag) ++ "\n" ++
             // Per-variant payload types, reflected. Payload-free tags
@@ -269,7 +270,23 @@ pub const RecordKind = enum(u8) {
     checkpoint = 4,
     screenshot = 5,
     end = 6,
+    window_chrome = 7,
 };
+
+/// Maximum synchronous chrome queries consumed by one recorded event.
+/// Per-event staging preserves nested dispatch and accessibility ownership.
+pub const max_session_window_chrome_queries: usize = 256;
+
+/// One OS capability result, consumed in query order by the following event.
+/// Values are copied; no native window or borrowed storage crosses replay.
+pub const WindowChromeRecord = struct {
+    window_id: platform.WindowId,
+    chrome: platform.WindowChrome,
+};
+
+/// A logic-only host has no window chrome capability. Its explicit
+/// absence replays as zero geometry; native sessions capture every query.
+pub const WindowChromeSource = enum(u8) { native_queries, unavailable };
 
 /// Session identity, written once as the first record.
 pub const Header = struct {
@@ -288,6 +305,7 @@ pub const Header = struct {
     /// Initial main-window geometry, for provenance and sanity checks.
     window_width: f32 = 0,
     window_height: f32 = 0,
+    window_chrome_source: WindowChromeSource = .native_queries,
 };
 
 /// A model-state fingerprint taken after the event with `event_ordinal`
@@ -319,6 +337,7 @@ pub const End = struct {
     effect_count: u64,
     checkpoint_count: u64,
     screenshot_count: u64,
+    window_chrome_count: u64 = 0,
 };
 
 pub const Record = union(RecordKind) {
@@ -328,6 +347,7 @@ pub const Record = union(RecordKind) {
     checkpoint: Checkpoint,
     screenshot: ScreenshotMark,
     end: End,
+    window_chrome: WindowChromeRecord,
 };
 
 /// Decode scratch for payloads that need an outer slice (dropped-file
@@ -630,9 +650,9 @@ pub fn encodeEvent(event: platform.Event, buffer: []u8) JournalError![]const u8 
             try cursor.writeInt(u64, timer.id);
             try cursor.writeInt(u64, timer.timestamp_ns);
         },
-        // Recorded for stream fidelity; inert on replay (the journaled
-        // audio EFFECT records are the Msg source — `takeAudioMsg`
-        // ignores platform audio events under replay).
+        // Recorded for stream fidelity. On replay this event pairs with
+        // its complete audio EFFECT record and delivers the recorded Msg
+        // synchronously, preserving the live rebuild/query boundary.
         .audio => |audio| {
             try cursor.writeEnum(EventTag.audio);
             try cursor.writeEnum(audio.kind);
@@ -1230,6 +1250,7 @@ pub fn encodeHeader(header: Header, buffer: []u8) JournalError![]const u8 {
     try cursor.writeInt(i64, header.recorded_at_wall_ms);
     try cursor.writeF32(header.window_width);
     try cursor.writeF32(header.window_height);
+    try cursor.writeEnum(header.window_chrome_source);
     return buffer[0..cursor.len];
 }
 
@@ -1242,6 +1263,7 @@ pub fn decodeHeader(bytes: []const u8) JournalError!Header {
         .recorded_at_wall_ms = try cursor.readInt(i64),
         .window_width = try cursor.readF32(),
         .window_height = try cursor.readF32(),
+        .window_chrome_source = try cursor.readEnum(WindowChromeSource),
     };
     if (!cursor.done()) return error.JournalCorrupt;
     return header;
@@ -1291,12 +1313,38 @@ pub fn decodeScreenshot(bytes: []const u8) JournalError!ScreenshotMark {
     return mark;
 }
 
+pub fn encodeWindowChrome(record: WindowChromeRecord, buffer: []u8) JournalError![]const u8 {
+    var cursor = WriteCursor{ .buffer = buffer };
+    try cursor.writeInt(u64, record.window_id);
+    try writeInsets(&cursor, record.chrome.insets);
+    try writeRect(&cursor, record.chrome.buttons);
+    try cursor.writeEnum(record.chrome.form_factor);
+    try cursor.writeBool(record.chrome.tabs_projected);
+    return buffer[0..cursor.len];
+}
+
+pub fn decodeWindowChrome(bytes: []const u8) JournalError!WindowChromeRecord {
+    var cursor = ReadCursor{ .bytes = bytes };
+    const record: WindowChromeRecord = .{
+        .window_id = try cursor.readInt(u64),
+        .chrome = .{
+            .insets = try readInsets(&cursor),
+            .buttons = try readRect(&cursor),
+            .form_factor = try cursor.readEnum(platform.FormFactor),
+            .tabs_projected = try cursor.readBool(),
+        },
+    };
+    if (!cursor.done()) return error.JournalCorrupt;
+    return record;
+}
+
 pub fn encodeEnd(end: End, buffer: []u8) JournalError![]const u8 {
     var cursor = WriteCursor{ .buffer = buffer };
     try cursor.writeInt(u64, end.event_count);
     try cursor.writeInt(u64, end.effect_count);
     try cursor.writeInt(u64, end.checkpoint_count);
     try cursor.writeInt(u64, end.screenshot_count);
+    try cursor.writeInt(u64, end.window_chrome_count);
     return buffer[0..cursor.len];
 }
 
@@ -1307,6 +1355,7 @@ pub fn decodeEnd(bytes: []const u8) JournalError!End {
         .effect_count = try cursor.readInt(u64),
         .checkpoint_count = try cursor.readInt(u64),
         .screenshot_count = try cursor.readInt(u64),
+        .window_chrome_count = try cursor.readInt(u64),
     };
     if (!cursor.done()) return error.JournalCorrupt;
     return end;
@@ -1352,6 +1401,7 @@ pub const Reader = struct {
     effect_count: u64 = 0,
     checkpoint_count: u64 = 0,
     screenshot_count: u64 = 0,
+    window_chrome_count: u64 = 0,
 
     pub fn init(bytes: []const u8) JournalError!Reader {
         if (bytes.len < preamble_len) return error.JournalBadMagic;
@@ -1402,12 +1452,17 @@ pub const Reader = struct {
                 self.screenshot_count += 1;
                 return .{ .screenshot = try decodeScreenshot(payload) };
             },
+            .window_chrome => {
+                self.window_chrome_count += 1;
+                return .{ .window_chrome = try decodeWindowChrome(payload) };
+            },
             .end => {
                 const end = try decodeEnd(payload);
                 if (end.event_count != self.event_count or
                     end.effect_count != self.effect_count or
                     end.checkpoint_count != self.checkpoint_count or
-                    end.screenshot_count != self.screenshot_count)
+                    end.screenshot_count != self.screenshot_count or
+                    end.window_chrome_count != self.window_chrome_count)
                 {
                     return error.JournalCountMismatch;
                 }
@@ -2115,4 +2170,22 @@ test "reader requires the header first" {
     len += framed.len;
     var reader = try Reader.init(buffer[0..len]);
     try testing.expectError(error.JournalMissingHeader, reader.next());
+}
+
+test "window chrome codec preserves every OS field and refuses damaged payloads" {
+    const expected: WindowChromeRecord = .{
+        .window_id = 18446744073709551615,
+        .chrome = .{ .insets = .{ .top = 66, .right = 7.25, .bottom = 3.5, .left = 98 }, .buttons = .init(20, 26, 68, 14), .form_factor = .compact, .tabs_projected = true },
+    };
+    var buffer: [64]u8 = undefined;
+    const bytes = try encodeWindowChrome(expected, &buffer);
+    try testing.expectEqualDeep(expected, try decodeWindowChrome(bytes));
+    for (0..bytes.len) |len| try testing.expectError(error.JournalCorrupt, decodeWindowChrome(bytes[0..len]));
+    buffer[bytes.len] = 0;
+    try testing.expectError(error.JournalCorrupt, decodeWindowChrome(buffer[0 .. bytes.len + 1]));
+    buffer[40] = 255;
+    try testing.expectError(error.JournalCorrupt, decodeWindowChrome(bytes));
+    buffer[40] = 1;
+    buffer[41] = 2;
+    try testing.expectError(error.JournalCorrupt, decodeWindowChrome(bytes));
 }
