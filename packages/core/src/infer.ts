@@ -497,6 +497,14 @@ export class IntInference {
       }
     };
     markType("Msg");
+    // Fixed helper arguments are constructed by the host. Their nested
+    // records, arrays and optional records obey the same boundary rule as
+    // Msg; only actual integer demand can specialize a numeric field.
+    for (const helper of this.table.modelHelperDecls()) {
+      for (const parameter of helper.decl.parameters.slice(1)) {
+        if (parameter.type) this.markNested(this.table.resolveTypeNode(parameter.type), markType);
+      }
+    }
     // Only the ENTRY module's exports face the host ABI (the wiring and
     // markup bind through the entry). An exported function in an imported
     // module is an ordinary cross-module call, so proof still applies —
@@ -1440,7 +1448,9 @@ export class IntInference {
           );
           if (hardFed || tentativeFed) {
             demandSlot(s, !hardFed);
-            changed = true;
+            // Comparison demand may yield to a host-boundary inflow.
+            // An unchanged slot does not advance this fixed point.
+            if (s.demanded) changed = true;
           }
         } else if (s.comparisonDemanded && hardFed) {
           demandSlot(s, false);

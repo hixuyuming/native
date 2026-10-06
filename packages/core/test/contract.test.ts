@@ -429,3 +429,50 @@ test("command channels distinguish strings from byte input and refuse ambiguous 
   assert.throws(() => contractOf(smallCore + '\nexport function commandMsg(name: number): Msg | null { return null; }\n'), /commandMsg requires one string or Uint8Array/i);
   assert.throws(() => contractOf(smallCore + '\nexport function commandMsg(name: Uint8Array, extra: number): Msg | null { return null; }\n'), /commandMsg requires one string or Uint8Array/i);
 });
+
+test("fixed Model-first helper arguments retain external nested numeric records optionals and slices", () => {
+  const c: any = contractOf(`
+export interface Model { count: number; }
+export interface Bounds { first: number; last: number; offset: number; }
+export interface Tag { id: number; score: number; }
+export interface Detail { nested: Tag; }
+export type Msg = { kind: "bump" };
+export function initialModel(): Model { return { count: 0 }; }
+export function update(model: Model, msg: Msg): Model { return { count: model.count + 1 }; }
+export function query(model: Model, range: Bounds, tags: readonly Tag[], detail: Detail | null): readonly Tag[] {
+  const rows: Tag[] = [];
+  for (let i = range.first; i < range.last; i++) {
+    const row = tags[i];
+    if (row !== undefined) rows.push({ id: row.id & 255, score: row.score + range.offset + (detail === null ? 0 : detail.nested.score) });
+  }
+  return rows;
+}
+`);
+  const helper = c.model_helpers.find((h: any) => h.name === "query");
+  assert.equal(helper.params.length, 3);
+  assert.equal(helper.params[1].kind, "slice");
+  assert.equal(helper.params[2].kind, "optional");
+  const fields = (name: string) => Object.fromEntries(c.types.structs.find((r: any) => r.name === name).fields.map((f: any) => [f.name, f.type.kind]));
+  assert.deepEqual(fields("Bounds"), { first: "i64", last: "i64", offset: "f64" });
+  assert.deepEqual(fields("Tag"), { id: "i64", score: "f64" });
+  assert.ok(c.integer_slots.some((s: any) => s.slot === "Bounds.first"));
+  assert.ok(!c.integer_slots.some((s: any) => s.slot === "Bounds.offset" || s.slot === "Tag.score"));
+});
+
+test("Model-first host frame channels stay outside the generic helper surface", () => {
+  const value = contractOf(`
+    import { type FrameEvent } from "@native-sdk/core/events";
+    export interface Model { readonly count: number }
+    export type Msg = { readonly kind: "resize"; readonly size: number } | { readonly kind: "reset" };
+    export function initialModel(): Model { return { count: 0 }; }
+    export function update(model: Model, msg: Msg): Model { switch(msg.kind) { case "resize": return { count: msg.size }; case "reset": return { count: 0 }; } }
+    export function frameMsg(model: Model, frame: FrameEvent): Msg | null { return frame.width !== model.count ? { kind: "resize", size: frame.width } : null; }
+    export function query(model: Model, amount: number): number { return model.count + amount; }
+  `);
+  assert.deepEqual((value.model_helpers as { name: string }[]).map(helper => helper.name), ["query"]);
+  assert.equal((value.channels as { frame_msg: boolean }).frame_msg, true);
+  assert.ok(!(value.types as { unions: { name: string }[] }).unions.some(type => type.name === "Msg"));
+  const slots = (value.integer_slots as { slot: string }[]).map(slot => slot.slot);
+  assert.ok(!slots.includes("Model.count") && !slots.includes("Msg.resize"));
+  assert.ok(!slots.includes("helpers.query.amount") && !slots.includes("helpers.query.return"));
+});
