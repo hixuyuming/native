@@ -904,6 +904,8 @@ pub const WidgetGroupSegment = enum {
 };
 
 pub const Widget = struct {
+    /// Portable appearance resolver installed by compiled views.
+    appearance_policy: ?*const fn ([]const u8, []u8) usize = null,
     /// Optional portable retained component policy, installed by compiled views.
     interaction_policy: ?*const fn ([]const u8, []u8) usize = null,
     id: ObjectId = 0,
@@ -1661,12 +1663,12 @@ fn mergeLayoutDefaults(explicit: WidgetLayoutStyle, defaults: WidgetLayoutStyle)
     return merged;
 }
 
-test "Widget keeps the reviewed retained footprint with portable component policy" {
+test "Widget keeps the reviewed retained footprint with portable component and appearance policies" {
     // One layout tree holds thousands of Widgets by value. On the 64-bit
-    // targets that run the renderer, 784 bytes is the reviewed footprint:
-    // the 776-byte native widget plus one optional 8-byte policy callback.
-    // The callback borrows compiled code, with no per-widget allocation.
+    // targets that run the renderer, 792 bytes is the reviewed footprint:
+    // the 776-byte native widget plus two optional 8-byte policy callbacks.
+    // The callbacks borrow compiled code, with no per-widget allocation.
     if (@sizeOf(usize) == 8) {
-        try std.testing.expectEqual(@as(usize, 784), @sizeOf(Widget));
+        try std.testing.expectEqual(@as(usize, 792), @sizeOf(Widget));
     }
 }
