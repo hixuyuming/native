@@ -1259,6 +1259,7 @@ fn tsCoreStage(
     stage_run.addFileInput(dep.path("packages/core/src/surface_recipes.ts"));
     stage_run.addFileInput(dep.path("packages/core/src/widget_metrics.ts"));
     stage_run.addFileInput(dep.path("packages/core/src/intrinsic_measure.ts"));
+    stage_run.addFileInput(dep.path("packages/core/src/measurement_coordination.ts"));
     stage_run.addFileInput(dep.path("packages/core/src/stream_policy.ts"));
     if (typescript_view) {
         stage_run.addArg("--view-markup");
@@ -2058,6 +2059,7 @@ pub fn addAppArtifacts(b: *std.Build, dep: *std.Build.Dependency, app_options: A
             .use_llvm = useLlvmWorkaround(target),
         });
         const node_tests = b.addSystemCommand(&.{tsToolingPreflight(b, dep, .app_core)});
+        node_tests.addArgs(&.{ "--test-reporter=spec", "--test-reporter-destination=stderr" });
         node_tests.addFileArg(dep.path("build/ts_run.mjs"));
         node_tests.addFileArg(dep.path("packages/core/scripts/run_native_tests.mjs"));
         node_tests.addArtifactArg(host);
