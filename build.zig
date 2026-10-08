@@ -130,19 +130,20 @@ test "root TypeScript markup discovery classification and resolver budgets" {
 
 test "generated TypeScript runners install the compiled root markup view" {
     const desktop = @embedFile("src/app_runner/ts_core_main.zig");
-    try std.testing.expect(std.mem.indexOf(u8, desktop, "TsUiAppWithFeatures(core, .{ .runtime_markup = dev and !ts_view.enabled })") != null);
+    try std.testing.expect(std.mem.indexOf(u8, desktop, "TsUiAppWithFeatures(core, .{ .runtime_markup = dev and !ts_view.enabled, .compiled_model = ts_view.enabled })") != null);
     try std.testing.expect(std.mem.indexOf(u8, desktop, "if (dev) void else @import(\"app_markup_root\")") != null);
     try std.testing.expect(std.mem.indexOf(u8, desktop, "CompiledMarkupImports(core.Model, core.Msg, \"app.native\", &app_markup_sources)") != null);
     try std.testing.expect(std.mem.indexOf(u8, desktop, ".view = CompiledAppView.build") != null);
-    try std.testing.expect(std.mem.indexOf(u8, desktop, "if (comptime ts_view.enabled) options.view = ts_view.build") != null);
+    try std.testing.expect(std.mem.indexOf(u8, desktop, "if (comptime ts_view.enabled) options.view = ts_view.buildRuntime") != null);
     try std.testing.expect(std.mem.indexOf(u8, desktop, ".markup = if (dev and !ts_view.enabled)") != null);
 
     const mobile = @embedFile("src/app_runner/ts_core_mobile.zig");
-    try std.testing.expect(std.mem.indexOf(u8, mobile, "pub const features: native_sdk.UiAppFeatures = .{ .runtime_markup = false }") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mobile, "pub const features: native_sdk.UiAppFeatures = .{ .runtime_markup = false, .compiled_model = ts_view.enabled }") != null);
     try std.testing.expect(std.mem.indexOf(u8, mobile, "TsUiAppWithFeatures(core, features)") != null);
     try std.testing.expect(std.mem.indexOf(u8, mobile, "const app_markup_root = @import(\"app_markup_root\")") != null);
     try std.testing.expect(std.mem.indexOf(u8, mobile, "CompiledMarkupImports(core.Model, core.Msg, \"app.native\", &app_markup_sources)") != null);
-    try std.testing.expect(std.mem.indexOf(u8, mobile, ".view = CompiledAppView.build") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mobile, ".view = if (ts_view.enabled) ts_view.buildRuntime else CompiledAppView.build") != null);
+    try std.testing.expect(std.mem.indexOf(u8, mobile, "pub const SourceModel = core.Model") != null);
     try std.testing.expect(std.mem.indexOf(u8, mobile, ".markup =") == null);
 }
 
@@ -1366,6 +1367,11 @@ pub fn build(b: *std.Build) void {
         test_step.dependOn(&native_driver_run.step);
         const host_e2e_run = b.addRunArtifact(ts_core_artifacts.host);
         const persist_e2e_run = b.addRunArtifact(ts_core_artifacts.persist);
+        const runtime_model_step = b.step("test-ts-runtime-model", "Verify compiled model projections, lazy snapshots, persistence and effects");
+        const runtime_model_host = filteredTestArtifact(b, ts_core_artifacts.host.root_module, "ts-runtime-model-host-tests", &.{"compiled host projects"});
+        const runtime_model_persist = filteredTestArtifact(b, ts_core_artifacts.persist.root_module, "ts-runtime-model-persist-tests", &.{ "compiled runtime model", "persist", "migration", "restore", "lifecycle" });
+        runtime_model_step.dependOn(&b.addRunArtifact(runtime_model_host).step);
+        runtime_model_step.dependOn(&b.addRunArtifact(runtime_model_persist).step);
         b.step("test-ts-control-appearance", "Compare complete compiled control appearance with native behavior").dependOn(&persist_e2e_run.step);
         b.step("test-ts-widget-routing", "Compare complete compiled input routing and focus with the native reference").dependOn(&b.addRunArtifact(ts_core_artifacts.widget_routing).step);
         b.step("test-ts-widget-changes", "Compare complete compiled retained widget changes with the native reference").dependOn(&b.addRunArtifact(ts_core_artifacts.widget_changes).step);
@@ -4393,6 +4399,7 @@ fn tsCoreE2eArtifact(
     const composition_decoder_mod = module(b, target, optimize, "src/app_runner/ts_compiled_view.zig");
     composition_decoder_mod.addImport("native_sdk", desktop_mod);
     composition_decoder_mod.addImport("core.zig", persist_fixture.module);
+    persist_mod.addImport("persist_decoder", composition_decoder_mod);
     const composition_src = b.addWriteFiles();
     _ = composition_src.addCopyFile(b.path("tests/ts-core/composition_fixture.ts"), "composition_fixture.ts");
     const composition_fixture = externalCoreFixtureModule(b, target, optimize, node, corewire_exe, .{
