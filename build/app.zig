@@ -1250,6 +1250,7 @@ fn tsCoreStage(
     stage_run.addFileInput(dep.path("packages/core/src/scalar_text.ts"));
     stage_run.addFileInput(dep.path("packages/core/src/glyph_atlas.ts"));
     stage_run.addFileInput(dep.path("packages/core/src/registered_font.ts"));
+    stage_run.addFileInput(dep.path("packages/core/src/vector_effects.ts"));
     stage_run.addFileInput(dep.path("packages/core/src/control_appearance.ts"));
     stage_run.addFileInput(dep.path("packages/core/src/component_construction.ts"));
     stage_run.addFileInput(dep.path("packages/core/src/widget_motion.ts"));
