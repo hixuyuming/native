@@ -560,7 +560,7 @@ pub fn buildCanvasFrame(previous: ?DisplayList, next: DisplayList, options: Canv
     const image_plan = if (storage.images.len == 0)
         RenderImagePlan{}
     else
-        try render_plan.imagePlanWithResources(options.image_resources, storage.images);
+        try render_plan.imagePlanWithResourcesAndPolicy(options.image_resources, storage.images, options.render_cache_policy);
     const image_cache_plan = if (storage.image_cache_entries.len == 0 and storage.image_cache_actions.len == 0)
         RenderImageCachePlan{}
     else
@@ -574,7 +574,7 @@ pub fn buildCanvasFrame(previous: ?DisplayList, next: DisplayList, options: Canv
     const layer_plan = if (storage.layers.len == 0)
         RenderLayerPlan{}
     else
-        try render_plan.layerPlan(storage.layers);
+        try render_plan.layerPlanWithPolicy(storage.layers, options.render_cache_policy);
     const layer_cache_plan = if (storage.layer_cache_entries.len == 0 and storage.layer_cache_actions.len == 0)
         RenderLayerCachePlan{}
     else
@@ -585,7 +585,7 @@ pub fn buildCanvasFrame(previous: ?DisplayList, next: DisplayList, options: Canv
             storage.layer_cache_entries,
             storage.layer_cache_actions,
         );
-    const resource_plan = try next.resourcePlan(storage.resources);
+    const resource_plan = try next.resourcePlanWithPolicy(storage.resources, options.render_cache_policy);
     const resource_cache_plan = try resource_plan.cachePlanWithWorkspace(
         cache_owner,
         options.previous_resource_cache,

@@ -135,17 +135,19 @@ const scene = [_]canvas.CanvasCommand{
     .{ .blur = .{ .id = 4, .rect = .init(40, 40, 30, 30), .radius = 2 } },
     .pop_opacity,
 };
+var resource_calls: [3]usize = @splat(0);
 var vector_calls: [2]usize = @splat(0);
 var family_calls: [6]usize = .{0} ** 6;
 var planning_calls: [2]usize = .{0} ** 2;
 fn observedPolicy(request: []const u8, output: []u8) usize {
+    if (request[0] == 64) resource_calls[request[2]] += 1;
     if (request[0] == 63) vector_calls[request[2]] += 1;
     if (request[0] == 12) family_calls[request[1]] += 1;
     if (request[0] == 13) planning_calls[request[1]] += 1;
     return core.nativeWindowPolicy(request, output);
 }
 
-test "compiled vector resources: both runtime frame consumers preserve complete warm changed and empty frames" {
+test "compiled render resources: both runtime frame consumers preserve complete warm changed and empty frames" {
     _ = core.initialModel();
     defer core.rt.frameReset();
     const native = try sdk.runtime.TestHarness().create(std.testing.allocator, .{});
@@ -170,20 +172,24 @@ test "compiled vector resources: both runtime frame consumers preserve complete 
     for ([_][]const canvas.CanvasCommand{ &scene, &scene, &changed, &.{} }, 0..) |commands, phase| {
         for ([_]@TypeOf(native){ native, compiled }) |h| _ = try h.runtime.setCanvasDisplayList(1, "canvas", .{ .commands = commands });
         const options = canvas.CanvasFrameOptions{ .frame_index = 9007199254740993 + phase, .timestamp_ns = 33, .full_repaint = true };
+        resource_calls = @splat(0);
         vector_calls = @splat(0);
         family_calls = .{0} ** 6;
         planning_calls = .{0} ** 2;
         const diagnostic = try native.runtime.canvasFramePlan(1, "canvas", null, options, a.value);
         try frameEqual(diagnostic, try compiled.runtime.canvasFramePlan(1, "canvas", null, options, b.value));
         try exact([_]usize{1} ** 6, family_calls);
+        try exact([_]usize{ 1, 1, 1 }, resource_calls);
         try exact([_]usize{ 1, 1 }, vector_calls);
         try exact([_]usize{ 1, 1 }, planning_calls);
+        resource_calls = @splat(0);
         vector_calls = @splat(0);
         family_calls = .{0} ** 6;
         planning_calls = .{0} ** 2;
         const presentation = try native.runtime.nextCanvasFrame(1, "canvas", options, a.value);
         try frameEqual(presentation, try compiled.runtime.nextCanvasFrame(1, "canvas", options, b.value));
         try exact([_]usize{1} ** 6, family_calls);
+        try exact([_]usize{ 1, 1, 1 }, resource_calls);
         try exact([_]usize{ 1, 1 }, vector_calls);
         try exact([_]usize{ 1, 1 }, planning_calls);
         if (phase < 3) {
@@ -280,6 +286,7 @@ test "render and batch failures precede every cache and preserve complete frame 
         sb.pipeline_cache_entries = sb.pipeline_cache_entries[0..0];
         const err = if (batch) error.RenderBatchListFull else error.RenderListFull;
         try std.testing.expectError(err, list.framePlan(null, .{}, sa));
+        resource_calls = @splat(0);
         vector_calls = @splat(0);
         family_calls = .{0} ** 6;
         planning_calls = .{0} ** 2;
@@ -301,6 +308,7 @@ test "compiled vector resources: render planning and resource ownership remain i
     const list = canvas.DisplayList{ .commands = &scene };
     const reference = try list.framePlan(null, .{}, a.value);
     for ([_]bool{ false, true }) |plan| {
+        resource_calls = @splat(0);
         vector_calls = @splat(0);
         family_calls = .{0} ** 6;
         planning_calls = .{0} ** 2;

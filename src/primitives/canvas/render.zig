@@ -412,6 +412,19 @@ pub const RenderPlan = struct {
         return planner.build(self);
     }
 
+    pub fn imagePlanWithResourcesAndPolicy(self: RenderPlan, image_resources: []const ReferenceImage, output: []RenderImage, policy: ?compiled_cache.Policy) Error!RenderImagePlan {
+        var planner = RenderImagePlanner.init(output);
+        planner.image_resources = image_resources;
+        if (policy) |owner| return planner.buildCompiled(self, owner);
+        return planner.build(self);
+    }
+
+    pub fn layerPlanWithPolicy(self: RenderPlan, output: []RenderLayer, policy: ?compiled_cache.Policy) Error!RenderLayerPlan {
+        var planner = RenderLayerPlanner.init(output);
+        if (policy) |owner| return planner.buildCompiled(self, owner);
+        return planner.build(self);
+    }
+
     pub fn layerPlan(self: RenderPlan, output: []RenderLayer) Error!RenderLayerPlan {
         var planner = RenderLayerPlanner.init(output);
         return planner.build(self);
