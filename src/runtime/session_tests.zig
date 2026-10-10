@@ -275,6 +275,122 @@ const JournalBuffer = struct {
     }
 };
 
+test "synchronous native window callbacks record after creation and replay close and reopen" {
+    const WindowApp = struct {
+        created: u32 = 0,
+        current: platform.WindowId = 0,
+        user_closes: u32 = 0,
+        fn app(self: *@This()) core.App {
+            return .{ .context = self, .name = "causal-windows", .scene_fn = scene, .event_fn = event };
+        }
+        fn scene(_: *anyopaque) !app_manifest.ShellConfig {
+            return session_scene;
+        }
+        fn event(context: *anyopaque, runtime: *core.Runtime, incoming: core.Event) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (incoming == .window_closed) self.user_closes += 1;
+            if (incoming != .command) return;
+            if (std.mem.eql(u8, incoming.command.name, "child.open")) {
+                const info = try runtime.createSourcelessShellWindow(.{ .label = "child", .width = 200, .height = 100 });
+                self.current = info.id;
+                self.created += 1;
+            } else if (std.mem.eql(u8, incoming.command.name, "child.close")) try runtime.closeWindow(self.current);
+        }
+    };
+    const Host = struct {
+        null_platform: platform.NullPlatform,
+        base: platform.Platform = undefined,
+        handler: platform.EventHandler = undefined,
+        handler_context: *anyopaque = undefined,
+        fn value(self: *@This()) platform.Platform {
+            self.base = self.null_platform.platform();
+            var result = self.base;
+            result.context = self;
+            result.run_fn = run;
+            result.services.create_window_fn = create;
+            result.services.close_window_fn = close;
+            return result;
+        }
+        fn run(context: *anyopaque, handler: platform.EventHandler, handler_context: *anyopaque) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            self.handler = handler;
+            self.handler_context = handler_context;
+            try handler(handler_context, .app_start);
+            for ([_][]const u8{ "child.open", "child.close", "child.open", "child.close" }) |command| {
+                try handler(handler_context, .{ .menu_command = .{ .name = command } });
+                try handler(handler_context, .frame_requested);
+            }
+            try handler(handler_context, .app_shutdown);
+        }
+        fn changed(self: *@This(), info: platform.WindowInfo, open: bool) !void {
+            // Both strings are host-owned borrowed payloads. Reuse their
+            // buffers immediately after the callback, just like a native
+            // delegate returning to its window operation.
+            var label: [platform.max_window_label_bytes]u8 = undefined;
+            var title: [platform.max_window_title_bytes]u8 = undefined;
+            @memcpy(label[0..info.label.len], info.label);
+            @memcpy(title[0..info.title.len], info.title);
+            try self.handler(self.handler_context, .{ .window_frame_changed = .{
+                .id = info.id,
+                .label = label[0..info.label.len],
+                .title = title[0..info.title.len],
+                .frame = info.frame,
+                .scale_factor = info.scale_factor,
+                .open = open,
+                .focused = open and info.focused,
+            } });
+            @memset(&label, 'x');
+            @memset(&title, 'x');
+        }
+        fn create(context: ?*anyopaque, options: platform.WindowOptions) !platform.WindowInfo {
+            const null_platform: *platform.NullPlatform = @ptrCast(@alignCast(context.?));
+            const self: *@This() = @fieldParentPtr("null_platform", null_platform);
+            const info = try self.base.services.createWindow(options);
+            try self.changed(info, true);
+            return info;
+        }
+        fn close(context: ?*anyopaque, id: platform.WindowId) !void {
+            const null_platform: *platform.NullPlatform = @ptrCast(@alignCast(context.?));
+            const self: *@This() = @fieldParentPtr("null_platform", null_platform);
+            const info = for (self.null_platform.windows[0..self.null_platform.window_count]) |window| {
+                if (window.id == id) break window;
+            } else return error.WindowNotFound;
+            try self.base.services.closeWindow(id);
+            try self.changed(info, false);
+        }
+    };
+    const gpa = std.testing.allocator;
+    const bytes = try gpa.create(JournalBuffer);
+    defer gpa.destroy(bytes);
+    bytes.* = .{};
+    const recorder = try gpa.create(session_record.SessionRecorder);
+    defer gpa.destroy(recorder);
+    recorder.* = session_record.SessionRecorder.init(bytes.sink());
+    recorder.begin(.{ .app_name = "causal-windows", .platform_name = "null" });
+    const host = try gpa.create(Host);
+    defer gpa.destroy(host);
+    host.* = .{ .null_platform = platform.NullPlatform.init(.{}) };
+    host.null_platform.gpu_surfaces = true;
+    defer host.null_platform.deinit();
+    const runtime = try gpa.create(core.Runtime);
+    defer gpa.destroy(runtime);
+    core.Runtime.initAt(runtime, .{ .platform = host.value(), .allocator = gpa, .session_recorder = recorder });
+    defer runtime.deinit();
+    var recorded: WindowApp = .{};
+    try runtime.run(recorded.app());
+    try std.testing.expect(recorder.finished and !recorder.failed);
+    try std.testing.expectEqual(@as(u32, 2), recorded.created);
+    try std.testing.expectEqual(@as(u32, 0), recorded.user_closes);
+    const harness = try core.TestHarness().create(gpa, .{});
+    defer harness.destroy(gpa);
+    harness.null_platform.gpu_surfaces = true;
+    var replayed: WindowApp = .{};
+    const report = try session_replay.replaySession(&harness.runtime, replayed.app(), bytes.journalBytes(), .{ .require_same_platform = false });
+    try std.testing.expect(report.ok());
+    try std.testing.expectEqualDeep(recorded, replayed);
+    try std.testing.expectEqual(runtime.sessionStateFingerprint(), harness.runtime.sessionStateFingerprint());
+}
+
 const RecordedSession = struct {
     model: SessionModel,
     fingerprint: u64,
@@ -3570,5 +3686,66 @@ test "recorded audio rejects altered missing unconsumed and wrongly owned delive
         if (scenario != 1) try fx.feedAudioRecord(event);
         if (scenario != 2) try std.testing.expect(fx.takeAudioMsg(.{ .kind = .loaded, .duration_ms = if (scenario == 0) 31_000 else 30_000, .playing = true }) == null);
         try std.testing.expectError(error.ReplayAudioDivergence, fx.finishReplay());
+    }
+}
+
+test "replay closes an adopted startup window before its native notification" {
+    const ClosingApp = struct {
+        closed: bool = false,
+        fn app(self: *@This()) core.App {
+            return .{ .context = self, .name = "adopted-close", .event_fn = event };
+        }
+        fn event(context: *anyopaque, runtime: *core.Runtime, incoming: core.Event) !void {
+            const self: *@This() = @ptrCast(@alignCast(context));
+            if (incoming == .command) {
+                try runtime.closeWindow(incoming.command.window_id);
+                self.closed = true;
+            }
+        }
+    };
+    const gpa = std.testing.allocator;
+    const bytes = try gpa.create(JournalBuffer);
+    defer gpa.destroy(bytes);
+    bytes.* = .{};
+    const recorder = try gpa.create(session_record.SessionRecorder);
+    defer gpa.destroy(recorder);
+    recorder.* = session_record.SessionRecorder.init(bytes.sink());
+    recorder.begin(.{ .app_name = "adopted-close", .platform_name = "null" });
+    const recorded = try core.TestHarness().create(gpa, .{});
+    defer recorded.destroy(gpa);
+    recorded.runtime.options.session_recorder = recorder;
+    const native_window = try recorded.null_platform.platform().services.createWindow(.{ .id = 1, .label = "main", .title = "Main" });
+    var original: ClosingApp = .{};
+    try recorded.runtime.dispatchPlatformEvent(original.app(), .app_start);
+    const notification: platform.WindowState = .{ .id = 1, .label = "main", .title = "Main", .frame = native_window.frame, .scale_factor = 1, .open = true, .focused = true };
+    try recorded.runtime.dispatchPlatformEvent(original.app(), .{ .window_frame_changed = notification });
+    try recorded.runtime.dispatchPlatformEvent(original.app(), .frame_requested);
+    try recorded.runtime.dispatchPlatformEvent(original.app(), .{ .menu_command = .{ .name = "close", .window_id = 1 } });
+    try recorded.runtime.dispatchPlatformEvent(original.app(), .frame_requested);
+    var closed_notification = notification;
+    closed_notification.open = false;
+    closed_notification.focused = false;
+    try recorded.runtime.dispatchPlatformEvent(original.app(), .{ .window_frame_changed = closed_notification });
+    recorder.finish();
+    try std.testing.expect(original.closed and recorder.finished and !recorder.failed);
+    const replayed = try core.TestHarness().create(gpa, .{});
+    defer replayed.destroy(gpa);
+    var fresh: ClosingApp = .{};
+    const report = try session_replay.replaySession(&replayed.runtime, fresh.app(), bytes.journalBytes(), .{ .require_same_platform = false });
+    try std.testing.expect(report.ok() and fresh.closed);
+    try std.testing.expect(report.checkpoints_verified >= 2);
+    try std.testing.expectEqual(recorded.runtime.sessionStateFingerprint(), replayed.runtime.sessionStateFingerprint());
+    // Missing native ownership remains an error outside replay, and unrelated
+    // native failures preserve all runtime flags even during replay.
+    for ([_]bool{ false, true }) |replay| {
+        const failed = try core.TestHarness().create(gpa, .{});
+        defer failed.destroy(gpa);
+        try failed.runtime.dispatchPlatformEvent(fresh.app(), .{ .window_frame_changed = notification });
+        failed.runtime.replay_window_chrome_active = replay;
+        if (replay) failed.null_platform.fail_next_close_window = true;
+        try std.testing.expectError(if (replay) error.CloseFailed else error.WindowNotFound, failed.runtime.closeWindow(1));
+        var windows: [platform.max_windows]platform.WindowInfo = undefined;
+        const window = failed.runtime.listWindows(&windows)[0];
+        try std.testing.expect(window.open and window.focused and !window.hidden);
     }
 }

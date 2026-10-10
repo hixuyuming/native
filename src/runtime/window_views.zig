@@ -124,12 +124,33 @@ pub fn RuntimeWindowViews(comptime Runtime: type) type {
             self.windows[index].info.focused = false;
             self.windows[index].info.hidden = false;
             self.options.platform.services.closeWindow(window_id) catch |err| {
-                self.windows[index].info.open = was_open;
-                self.windows[index].info.focused = was_focused;
-                self.windows[index].info.hidden = was_hidden;
-                return err;
+                // Replay adopts startup windows from recorded host events.
+                // They have runtime ownership but may have no native owner
+                // on the headless host. Preserve the app's close transition
+                // before the later recorded native close notification.
+                if (!self.replay_window_chrome_active or err != error.WindowNotFound) {
+                    self.windows[index].info.open = was_open;
+                    self.windows[index].info.focused = was_focused;
+                    self.windows[index].info.hidden = was_hidden;
+                    return err;
+                }
             };
             Self.removeWindowRuntimeViews(self, window_id);
+            self.invalidated = true;
+        }
+
+        /// Replay a successful native window capability without entering the
+        /// platform. The journal supplies the outcome; native retains view
+        /// ownership and applies the corresponding bookkeeping transition.
+        pub fn restoreWindowCapabilityResult(self: *Runtime, label: []const u8, closed: bool) void {
+            const index = Self.findWindowIndexByLabel(self, label) orelse return;
+            if (!self.windows[index].info.open) return;
+            self.windows[index].info.hidden = false;
+            if (closed) {
+                self.windows[index].info.open = false;
+                self.windows[index].info.focused = false;
+                Self.removeWindowRuntimeViews(self, self.windows[index].info.id);
+            } else Self.setFocusedIndex(self, index) catch return;
             self.invalidated = true;
         }
 
