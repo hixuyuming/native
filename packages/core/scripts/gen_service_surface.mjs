@@ -30,13 +30,20 @@
 // Exit 2: the compiler manifest is not installed or unreadable.
 
 import fs from "node:fs";
+import { compilerSurfacePath } from "./scriptc_toolchain.mjs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const KNOWN_SCHEMA_VERSION = 1;
 const coreRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const repoRoot = path.resolve(coreRoot, "..", "..");
-const manifestPath = path.join(coreRoot, "node_modules", "@scriptc", "compiler", "surface-manifest.json");
+let manifestPath;
+try {
+  manifestPath = compilerSurfacePath(path.join(coreRoot, "package.json"));
+} catch (error) {
+  console.error(`gen_service_surface: ${error.message}`);
+  process.exit(2);
+}
 const outputRel = "skill-data/ts-services/references/service-surface.md";
 const outputPath = path.join(repoRoot, outputRel);
 
@@ -102,7 +109,7 @@ const constrainedCallRefusal = missingLoweringFence?.code
 const sections = [];
 sections.push(`<!-- GENERATED FILE — do not edit by hand.
      Derived byte-for-byte from the pinned compiler's surface manifest:
-       packages/core/node_modules/@scriptc/compiler/surface-manifest.json
+       resolved through packages/core/scripts/scriptc_toolchain.mjs
      Regenerate after any compiler pin move:
        node packages/core/scripts/gen_service_surface.mjs
      Verify without writing:
@@ -201,7 +208,7 @@ if (existing === null) {
 
 // 2. Pin sanity: the installed manifest is the pinned compiler's.
 const pkg = JSON.parse(fs.readFileSync(path.join(coreRoot, "package.json"), "utf8"));
-const pin = pkg.dependencies?.scriptc;
+const pin = pkg.nativeToolchain?.scriptc ?? pkg.dependencies?.scriptc;
 if (manifest.compilerVersion !== pin) {
   problems.push(`installed compiler manifest is ${manifest.compilerVersion} but packages/core/package.json pins scriptc ${pin} — run \`npm ci --include=dev\` in packages/core`);
 }
